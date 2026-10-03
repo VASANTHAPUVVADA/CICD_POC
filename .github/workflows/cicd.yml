@@ -5,13 +5,19 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: hello-world-production
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: hello-world
+  CONTAINER_NAME: hello-world
 
 jobs:
   validate:
@@ -34,7 +40,7 @@ jobs:
 
   publish:
     name: Push image to Amazon ECR
-    if: github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: validate
     runs-on: ubuntu-latest
     outputs:
@@ -60,13 +66,15 @@ jobs:
           ECR_REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
           image_uri="$ECR_REGISTRY/${ECR_REPOSITORY}:${GITHUB_SHA}"
-          docker build --tag "$image_uri" .
+          latest_uri="$ECR_REGISTRY/${ECR_REPOSITORY}:latest"
+          docker build --tag "$image_uri" --tag "$latest_uri" .
           docker push "$image_uri"
+          docker push "$latest_uri"
           echo "uri=$image_uri" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Deploy to self-hosted instance
-    if: github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: publish
     runs-on: self-hosted
     steps:
@@ -83,11 +91,13 @@ jobs:
       - name: Replace running container
         env:
           IMAGE_URI: ${{ needs.publish.outputs.image }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
         run: |
+          set -eu
           docker pull "$IMAGE_URI"
-          docker rm --force hello-world 2>/dev/null || true
+          docker rm --force "$CONTAINER_NAME" 2>/dev/null || true
           docker run --detach \
-            --name hello-world \
+            --name "$CONTAINER_NAME" \
             --restart unless-stopped \
             --publish 80:3000 \
             "$IMAGE_URI"
